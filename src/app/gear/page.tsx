@@ -1,21 +1,21 @@
 'use client';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect,创新, useState, useCallback } from 'react';
 
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
   
-  // Antrean lokal yang kebal terhadap kegagalan jaringan
-  const pendingSyncRef = useRef<{ [key: string]: { participantName: string; gearName: string; isChecked: boolean } }>({});
-  const [pendingCount, setPendingCount] = useState(0);
+  // State untuk melacak data apa saja yang baru dirubah dan belum disimpan
+  const [localChanges, setLocalChanges] = useState<{ [key: string]: { participantName: string; gearName: string; isChecked: boolean } }>({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // 1. Ambil Data Gabungan (Cloud Database + Backup Lokal)
-  const fetchData = useCallback(async (showFullLoading = true) => {
-    if (showFullLoading) setLoading(true);
+  // 1. Ambil Data dari Server
+  const fetchData = useCallback(async () => {
+    setLoading(true);
     try {
       const timestamp = new Date().getTime();
-      
       const resExpedition = await fetch(`/api/expedition?t=${timestamp}`, { cache: 'no-store' });
       const dExpedition = await resExpedition.json();
       setData(dExpedition);
@@ -24,11 +24,8 @@ export default function GearChecklistTable() {
       const dChecklist = await resChecklist.json();
       
       if (dChecklist && !dChecklist.error) {
-        // Ambil cadangan lokal untuk memastikan tidak ada data yang terlewat
-        const localSaved = localStorage.getItem('gede_gear_checklist_backup');
-        const localParsed = localSaved ? JSON.parse(localSaved) : {};
-        
-        setChecklistState({ ...dChecklist, ...localParsed });
+        setChecklistState(dChecklist);
+        setLocalChanges({}); // Kosongkan riwayat editan lokal saat data segar masuk
       }
     } catch (err) {
       console.error("Gagal menarik data cloud:", err);
@@ -37,89 +34,60 @@ export default function GearChecklistTable() {
     }
   }, []);
 
-  // 2. Fungsi Sinkronisasi Latar Belakang yang Dilindungi (Safe Sync)
-  const syncPendingToCloud = useCallback(async () => {
-    // Ambil cuplikan antrean saat ini
-    const currentQueue = { ...pendingSyncRef.current };
-    const queueArray = Object.values(currentQueue);
-    
-    if (queueArray.length === 0) return;
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
+  // 2. Fungsi Klik Handler: Hanya merubah data di layar HP
+  const toggleCheck = (participantName: string, gearName: string) => {
+    const key = `${participantName}-${gearName}`;
+    const targetStatus = !checklistState[key];
+
+    // A. Ubah tampilan di layar instan
+    setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
+
+    // B. Catat perubahan ke dalam daftar antrean simpan
+    setLocalChanges(prev => ({
+      ...prev,
+      [key]: { participantName, gearName, isChecked: targetStatus }
+    }));
+    setSaveSuccess(false);
+  };
+
+  // 3. JANTUNG SOLUSI: Fungsi Tombol Simpan Manual ke MongoDB
+  const handleSaveChanges = async () => {
+    const updatesArray = Object.values(localChanges);
+    if (updatesArray.length === 0) return;
+
+    setIsSaving(true);
     try {
       const response = await fetch('/api/checklist', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache'
-        },
-        body: JSON.stringify({ updates: queueArray })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates: updatesArray })
       });
 
       if (response.ok) {
         const resData = await response.json();
         if (resData.success) {
-          // JIKA BERHASIL: Hapus HANYA data yang sukses dikirim dari antrean utama
-          Object.keys(currentQueue).forEach(key => {
-            if (pendingSyncRef.current[key] && pendingSyncRef.current[key].isChecked === currentQueue[key].isChecked) {
-              delete pendingSyncRef.current[key];
-            }
-          });
-          
-          // Perbarui indikator angka antrean di layar
-          const remainingCount = Object.keys(pendingSyncRef.current).length;
-          setPendingCount(remainingCount);
-
-          if (remainingCount === 0) {
-            localStorage.removeItem('gede_gear_checklist_backup');
-          }
+          setLocalChanges({}); // Bersihkan antrean karena sudah aman di cloud
+          setSaveSuccess(true);
+          setTimeout(() => setSaveSuccess(false), 3000); // Hilangkan notif sukses setelah 3 detik
         }
       }
     } catch (error) {
-      console.error("Koneksi gagal, menyimpan antrean untuk dicoba 5 detik lagi:", error);
+      alert("❌ Gagal menyimpan ke database cloud! Periksa koneksi internetmu.");
+    } finally {
+      setIsSaving(false);
     }
-  }, []);
-
-  // Manajemen Polling Otomatis (Setiap 5 Detik)
-  useEffect(() => {
-    fetchData(true);
-    
-    const interval = setInterval(() => {
-      syncPendingToCloud();
-      fetchData(false);
-    }, 5000);
-    
-    return () => clearInterval(interval);
-  }, [fetchData, syncPendingToCloud]);
-
-  // 3. Fungsi Klik Handler (0-Delay Responsif)
-  const toggleCheck = (participantName: string, gearName: string) => {
-    const key = `${participantName}-${gearName}`;
-    const targetStatus = !checklistState[key];
-
-    // A. Deteksi Instan di Layar Browser
-    const updatedState = { ...checklistState, [key]: targetStatus };
-    setChecklistState(updatedState);
-
-    // B. Tulis ke Backup LocalStorage
-    const localSaved = localStorage.getItem('gede_gear_checklist_backup');
-    const localParsed = localSaved ? JSON.parse(localSaved) : {};
-    localParsed[key] = targetStatus;
-    localStorage.setItem('gede_gear_checklist_backup', JSON.stringify(localParsed));
-
-    // C. Masukkan ke Ref Antrean untuk disemburkan ke MongoDB
-    pendingSyncRef.current[key] = {
-      participantName,
-      gearName,
-      isChecked: targetStatus
-    };
-    
-    setPendingCount(Object.keys(pendingSyncRef.current).length);
   };
 
-  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Menghubungkan Jaringan Sinkronisasi...</div>;
+  const hasChanges = Object.keys(localChanges).length > 0;
+
+  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Memuat Matriks Perlengkapan...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // Master Kategori Alat (Tetap Sama)
+  // Master Data Perlengkapan
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -208,20 +176,41 @@ export default function GearChecklistTable() {
   return (
     <div className="p-2 sm:p-4 max-w-7xl mx-auto space-y-6">
       
-      {/* Header Panel */}
-      <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      {/* HEADER PANEL + TOMBOL SIMPAN MANUAL */}
+      <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4 sticky top-0 md:relative z-50">
         <div className="space-y-1">
           <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center">
-            <i className="fa-solid fa-cloud-bolt text-emerald-600 mr-2"></i>Matriks Checklist (Local-First Sync V2)
+            <i className="fa-solid fa-cloud-arrow-up text-emerald-600 mr-2"></i>Checklist Perlengkapan Personal Tim
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Klik tersimpan instan di HP kamu dan otomatis dicicil ke database awan secara berkala.
+            Silakan centang bawaanmu secara bebas, lalu klik tombol <strong className="text-slate-800">Simpan Ke Database</strong> jika sudah selesai.
           </p>
         </div>
         
-        <div className="text-xs font-bold flex items-center gap-2 bg-slate-50 border px-4 py-2 rounded-xl shrink-0">
-          <span className={`w-2.5 h-2.5 rounded-full ${pendingCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-          {pendingCount > 0 ? `Menyinkronkan ${pendingCount} data ke cloud...` : 'Cloud Terkoneksi & Sinkron'}
+        {/* GRUP CONTROL UTAMA (TOMBOL REFRESH & SIMPAN) */}
+        <div className="flex items-center gap-2 w-full md:w-auto">
+          <button 
+            onClick={fetchData}
+            className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold p-3 rounded-xl border border-slate-300 transition-colors"
+            title="Tarik ulang data terbaru teman"
+          >
+            <i className="fa-solid fa-rotate"></i>
+          </button>
+
+          <button 
+            onClick={handleSaveChanges}
+            disabled={!hasChanges || isSaving}
+            className={`flex-grow md:flex-grow-0 inline-flex items-center justify-center text-xs font-black py-3 px-5 rounded-xl transition-all gap-2 shadow-sm ${
+              hasChanges 
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white animate-pulse' 
+                : saveSuccess 
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+            }`}
+          >
+            <i className={`fa-solid ${isSaving ? 'fa-spinner animate-spin' : saveSuccess ? 'fa-circle-check' : 'fa-floppy-disk'}`}></i>
+            {isSaving ? 'Menyimpan...' : saveSuccess ? 'Berhasil Disimpan!' : hasChanges ? `Simpan (${Object.keys(localChanges).length} Perubahan)` : 'Sudah Tersimpan'}
+          </button>
         </div>
       </div>
 
@@ -262,7 +251,7 @@ export default function GearChecklistTable() {
                           type="checkbox" 
                           checked={isChecked}
                           onChange={() => {}} 
-                          className="w-3.5 h-3.5 text-emerald-600 border-slate-300 rounded accent-emerald-600 shadow-xs"
+                          className="w-3.5 h-3.5 text-emerald-600 border-slate-300 rounded accent-emerald-600"
                         />
                       </div>
                     );
@@ -317,7 +306,7 @@ export default function GearChecklistTable() {
                         const isChecked = !!checklistState[`${p.name}-${item.name}`];
                         return (
                           <div key={pIdx} onClick={() => toggleCheck(p.name, item.name)} className={`p-3 text-center cursor-pointer select-none h-full flex items-center justify-center border-r border-slate-100 ${isChecked ? 'bg-emerald-50/40' : ''}`}>
-                            <input type="checkbox" checked={isChecked} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110 shadow-xs" />
+                            <input type="checkbox" checked={isChecked} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110" />
                           </div>
                         );
                       })}
