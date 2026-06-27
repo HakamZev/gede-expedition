@@ -1,26 +1,32 @@
-import { NextResponse } from 'next/server';
-import { MongoClient } from 'mongodb';
+import { connectToDatabase } from "@/lib/db";
+import mongoose from "mongoose";
+import { NextResponse } from "next/server";
 
+// Pastikan Vercel selalu mengambil data terbaru secara dinamis dari database cloud
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const uri = process.env.MONGODB_URI || "";
-let cachedClient: MongoClient | null = null;
+// Daftarkan skema cetakan model checklist langsung menggunakan Mongoose pool
+const ChecklistSchema = new mongoose.Schema({
+  participantName: { type: String, required: true },
+  gearName: { type: String, required: true },
+  isChecked: { type: Boolean, required: true },
+  updatedAt: { type: Date, default: Date.now }
+}, { collection: 'gear_checklists' });
 
-async function connectToDatabase() {
-  if (cachedClient) return cachedClient;
-  if (!uri) throw new Error("MONGODB_URI belum dikonfigurasi di Environment Variables");
-  cachedClient = await MongoClient.connect(uri);
-  return cachedClient;
-}
+const Checklist = mongoose.models.Checklist || mongoose.model('Checklist', ChecklistSchema);
 
-// GET: Mengambil data untuk semua orang
+// ========================================================
+// METODE GET: MENARIK DATA CHECKLIST DARI MONGODB
+// ========================================================
 export async function GET() {
   try {
-    const client = await connectToDatabase();
-    const db = client.db('gede_db');
-    const checklistData = await db.collection('gear_checklist').find({}).toArray();
+    await connectToDatabase();
     
+    // Ambil data dari koleksi gear_checklists
+    const checklistData = await Checklist.find({});
+    
+    // Konversi array dokumen menjadi objek key-value map
     const checklistState: { [key: string]: boolean } = {};
     checklistData.forEach((item: any) => {
       checklistState[`${item.participantName}-${item.gearName}`] = item.isChecked;
@@ -38,46 +44,40 @@ export async function GET() {
   }
 }
 
-// POST: Menyimpan massal dengan proteksi BulkWrite (Anti Gagal)
+// ========================================================
+// METODE POST: MENYIMPAN DATA CHECKLIST SECARA MASSAL (BULKWRITE)
+// ========================================================
 export async function POST(request: Request) {
   try {
+    await connectToDatabase();
     const body = await request.json();
     const { updates } = body;
 
     if (!updates || !Array.isArray(updates) || updates.length === 0) {
-      return NextResponse.json({ success: true, message: "Tidak ada data yang perlu diperbarui" });
+      return NextResponse.json({ success: true, message: "Tidak ada data perubahan" });
     }
 
-    const client = await connectToDatabase();
-    const db = client.db('gede_db');
-    const collection = db.collection('gear_checklist');
-
-    // Susun operasi bulk agar MongoDB mengeksekusi semuanya dalam 1 perintah tunggal
-    const operations = updates.map((update: any) => ({
+    // Susun operasi pembaruan massal Mongoose yang sangat aman dari tabrakan data
+    const bulkOperations = updates.map((update: any) => ({
       updateOne: {
         filter: { participantName: update.participantName, gearName: update.gearName },
         update: { 
           $set: { 
             participantName: update.participantName, 
             gearName: update.gearName, 
-            isChecked: Boolean(update.isChecked), 
-            updatedAt: new Date() 
+            isChecked: Boolean(update.isChecked),
+            updatedAt: new Date()
           } 
         },
-        upsert: true
+        upsert: true // Jika data belum ada di database, otomatis buat baru
       }
     }));
 
-    // Jalankan operasi massal ke MongoDB
-    const result = await collection.bulkWrite(operations);
+    // Eksekusi operasi massal satu ketukan ke MongoDB cluster
+    await Checklist.bulkWrite(bulkOperations);
 
-    return NextResponse.json({ 
-      success: true, 
-      matchedCount: result.matchedCount, 
-      upsertedCount: result.upsertedCount 
-    });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
-    console.error("Error bulkWrite MongoDB:", error);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }

@@ -6,34 +6,32 @@ export default function GearChecklistTable() {
   const [loading, setLoading] = useState(true);
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
   
-  // State pelacak editan lokal
+  // State pencatat editan lokal sebelum tombol simpan diklik
   const [localChanges, setLocalChanges] = useState<{ [key: string]: { participantName: string; gearName: string; isChecked: boolean } }>({});
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // 1. Ambil Data dari Server
+  // Fungsi Fetching sinkronisasi database
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const timestamp = new Date().getTime();
       
-      // Ambil data personil tim
+      // 1. Ambil data personil tim aktif
       const resExpedition = await fetch(`/api/expedition?t=${timestamp}`, { cache: 'no-store' });
       const dExpedition = await resExpedition.json();
       setData(dExpedition);
 
-      // Ambil data checklist dari MongoDB
+      // 2. Ambil data status checklist dari MongoDB
       const resChecklist = await fetch(`/api/checklist?t=${timestamp}`, { cache: 'no-store' });
       const dChecklist = await resChecklist.json();
       
       if (dChecklist && !dChecklist.error) {
         setChecklistState(dChecklist);
-        setLocalChanges({}); // Reset antrean lokal setelah berhasil memuat data segar
-      } else if (dChecklist.error) {
-        console.error("API Checklist me-return error:", dChecklist.error);
+        setLocalChanges({}); // Reset paksa log perubahan lokal setelah sukses sinkron
       }
     } catch (err) {
-      console.error("Gagal menarik data cloud:", err);
+      console.error("Gagal sinkronisasi data cloud:", err);
     } finally {
       setLoading(false);
     }
@@ -43,15 +41,15 @@ export default function GearChecklistTable() {
     fetchData();
   }, [fetchData]);
 
-  // 2. Klik handler (Hanya merubah state visual layar sementara)
+  // Fungsi Klik: Merubah tampilan visual secara instan di layar
   const toggleCheck = (participantName: string, gearName: string) => {
     const key = `${participantName}-${gearName}`;
     const targetStatus = !checklistState[key];
 
-    // Ubah di layar instan
+    // Mengunci posisi centang di layar agar tidak hilang/berkedip
     setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
 
-    // Catat ke daftar editan yang siap dikirim
+    // Masukkan ke dalam daftar antrean simpan
     setLocalChanges(prev => ({
       ...prev,
       [key]: { participantName, gearName, isChecked: targetStatus }
@@ -59,7 +57,7 @@ export default function GearChecklistTable() {
     setSaveSuccess(false);
   };
 
-  // 3. Fungsi Kirim Data ke Database (Dengan Deteksi Error Ketat)
+  // Fungsi Kirim Data ke MongoDB Cloud
   const handleSaveChanges = async () => {
     const updatesArray = Object.values(localChanges);
     if (updatesArray.length === 0) return;
@@ -78,19 +76,17 @@ export default function GearChecklistTable() {
       const resData = await response.json();
 
       if (response.ok && resData.success) {
-        // JIKA BENAR-BENAR SUKSES MASUK MONGODB:
         setLocalChanges({});
         setSaveSuccess(true);
-        // Tarik data ulang dari cloud untuk memastikan sinkronisasi sempurna
+        // Paksa halaman menarik data paling baru untuk membuktikan data tersimpan permanen
         await fetchData(); 
         setTimeout(() => setSaveSuccess(false), 3000);
       } else {
-        // Jika server me-return status error (misal 500 atau 400)
-        alert(`❌ Gagal menyimpan! Server merespon: ${resData.error || 'Unknown Error'}`);
-        await fetchData(); // Kembalikan ke data asli di database karena gagal
+        alert(`❌ Gagal Simpan: ${resData.error || 'Server error'}`);
+        await fetchData(); // Kembalikan ke state awal database jika gagal
       }
     } catch (error: any) {
-      alert(`💥 Koneksi Terputus! Tidak bisa menghubungi database cloud. Error: ${error.message}`);
+      alert(`💥 Terjadi gangguan jaringan: ${error.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -98,10 +94,9 @@ export default function GearChecklistTable() {
 
   const hasChanges = Object.keys(localChanges).length > 0;
 
-  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Menghubungkan Server Cloud MongoDB...</div>;
+  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Sinkronisasi Database Mongoose...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // Master Kategori Perlengkapan (Sama Seperti Sebelumnya)
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -194,10 +189,10 @@ export default function GearChecklistTable() {
       <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4 sticky top-0 md:relative z-50">
         <div className="space-y-1">
           <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center">
-            <i className="fa-solid fa-cloud-arrow-up text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Tim
+            <i className="fa-solid fa-cloud-arrow-up text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Personal Tim
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Centang bawaan mandiri kamu, lalu tekan <strong className="text-emerald-700">Simpan Perubahan</strong> agar sinkron ke seluruh anggota tim.
+            Centang bawaan mandiri kamu, lalu tekan <strong className="text-emerald-700">Simpan Perubahan</strong> agar sinkron secara permanen.
           </p>
         </div>
         
@@ -298,7 +293,7 @@ export default function GearChecklistTable() {
             <div className="text-sm text-slate-800 font-medium divide-y divide-slate-100">
               {gearCategories.map((cat, catIdx) => (
                 <div key={`desktop-cat-group-${catIdx}`}>
-                  <div className="w-full bg-slate-100/90 border-y border-slate-200 text-xs font-black text-slate-700 uppercase tracking-wider p-3 pl-4 sticky top-[48px z-20]">
+                  <div className="w-full bg-slate-100/90 border-y border-slate-200 text-xs font-black text-slate-700 uppercase tracking-wider p-3 pl-4 sticky top-[48px] z-20">
                     📂 {cat.category}
                   </div>
 
