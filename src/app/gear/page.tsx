@@ -4,38 +4,64 @@ import { useEffect, useState } from 'react';
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // State checklist sekarang diisi dari database
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
 
-  const fetchData = () => {
+  const fetchData = async () => {
     setLoading(true);
-    fetch('/api/expedition')
-      .then(res => res.json())
-      .then(d => {
-        setData(d);
-        const saved = localStorage.getItem('gede_gear_checklist');
-        if (saved) setChecklistState(JSON.parse(saved));
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error(err);
-        setLoading(false);
-      });
+    try {
+      // 1. Ambil data roster tim asli
+      const resExpedition = await fetch('/api/expedition');
+      const dExpedition = await resExpedition.json();
+      setData(dExpedition);
+
+      // 2. Ambil data checklist dari MongoDB Database
+      const resChecklist = await fetch('/api/checklist');
+      const dChecklist = await resChecklist.json();
+      if (!dChecklist.error) {
+        setChecklistState(dChecklist);
+      }
+    } catch (err) {
+      console.error("Gagal memuat data:", err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     fetchData();
   }, []);
 
-  const toggleCheck = (participantName: string, gearName: string) => {
+  // Fungsi toggle yang langsung menyimpan ke MongoDB
+  const toggleCheck = async (participantName: string, gearName: string) => {
     const key = `${participantName}-${gearName}`;
-    const newState = { ...checklistState, [key]: !checklistState[key] };
-    setChecklistState(newState);
-    localStorage.setItem('gede_gear_checklist', JSON.stringify(newState));
+    const targetStatus = !checklistState[key];
+
+    // Optimistic Update: Ubah di layar secara instan dulu agar terasa cepat
+    setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
+
+    try {
+      // Kirim perubahan status centang ke database backend
+      await fetch('/api/checklist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          participantName,
+          gearName,
+          isChecked: targetStatus
+        })
+      });
+    } catch (err) {
+      console.error("Gagal menyimpan ke database:", err);
+      // Revert/kembalikan jika gagal kirim ke server
+      setChecklistState(prev => ({ ...prev, [key]: !targetStatus }));
+    }
   };
 
   if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Memuat Matriks Perlengkapan...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
+  // DATA KATEGORI (Tetap sama seperti kode sebelumnya)
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -117,7 +143,6 @@ export default function GearChecklistTable() {
   ];
 
   const totalParticipants = data.participants.length;
-
   const gridTemplateStyle = {
     gridTemplateColumns: `300px 100px repeat(${totalParticipants}, 140px)`
   };
@@ -132,7 +157,7 @@ export default function GearChecklistTable() {
             <i className="fa-solid fa-table-list text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Personal
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Centang nama masing-masing peserta untuk menandai kesiapan logistik mandiri mereka.
+            Centang nama masing-masing peserta untuk menandai kesiapan logistik mandiri mereka. data tersimpan otomatis di cloud database.
           </p>
         </div>
         
@@ -146,18 +171,14 @@ export default function GearChecklistTable() {
         </button>
       </div>
 
-      {/* ========================================================================= */}
-      {/* 1. TAMPILAN MOBILE (ONLY VISIBLE ON MOBILE SCREEN: hidden sm:block)       */}
-      {/* ========================================================================= */}
+      {/* 1. TAMPILAN MOBILE RESPONSIF */}
       <div className="block sm:hidden space-y-6">
         {gearCategories.map((cat, catIdx) => (
           <div key={`mobile-cat-${catIdx}`} className="space-y-3">
-            {/* Header Kategori Mobile */}
             <div className="bg-slate-800 text-white font-bold text-xs uppercase tracking-wider px-3 py-2 rounded-lg flex items-center shadow-xs">
               📂 {cat.category}
             </div>
 
-            {/* List Kartu Barang */}
             {cat.items.map((item, itemIdx) => (
               <div key={`mobile-item-${catIdx}-${itemIdx}`} className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs space-y-3">
                 <div className="flex items-center justify-between gap-2">
@@ -169,7 +190,6 @@ export default function GearChecklistTable() {
                   )}
                 </div>
 
-                {/* Sub-Grid Peserta Di Dalam Kartu */}
                 <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
                   {data.participants.map((p: any, pIdx: number) => {
                     const isChecked = checklistState[`${p.name}-${item.name}`];
@@ -200,14 +220,11 @@ export default function GearChecklistTable() {
         ))}
       </div>
 
-      {/* ========================================================================= */}
-      {/* 2. TAMPILAN DESKTOP (HIDDEN ON MOBILE SCREEN: hidden sm:block)            */}
-      {/* ========================================================================= */}
+      {/* 2. TAMPILAN DESKTOP */}
       <div className="hidden sm:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
         <div className="overflow-auto max-h-[calc(100vh-220px)] min-w-full">
           <div style={{ minWidth: `${400 + (totalParticipants * 140)}px` }} className="text-left">
             
-            {/* Header Row */}
             <div style={gridTemplateStyle} className="grid bg-slate-50 border-b border-slate-200 text-slate-800 text-xs font-bold sticky top-0 z-30 shadow-xs items-center">
               <div className="p-4 sticky left-0 bg-slate-50 z-40 border-r border-slate-200 h-full flex items-center shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
                 Nama Perlengkapan / Alat
@@ -222,7 +239,6 @@ export default function GearChecklistTable() {
               ))}
             </div>
 
-            {/* Body Row */}
             <div className="text-sm text-slate-800 font-medium divide-y divide-slate-100">
               {gearCategories.map((cat, catIdx) => (
                 <div key={`desktop-cat-group-${catIdx}`}>
