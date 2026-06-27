@@ -19,7 +19,7 @@ export default function SchedulePage() {
   }, []);
 
   // Tautan Koordinat Lokasi Rumah Hakam (Titik Kumpul)
-  const meetingPointUrl = "http://maps.google.com/?q=-6.597628,106.799568"; // Tautan disesuaikan ke format standar Maps agar valid saat diklik
+  const meetingPointUrl = "http://maps.google.com/?q=-6.530336, 106.798230"; // Tautan disesuaikan ke format standar Maps agar valid saat diklik
 
   // Susunan Itinerary Resmi Gunung Gede via Putri 2 Hari 1 Malam
   const itinerary = [
