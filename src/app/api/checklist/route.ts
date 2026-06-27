@@ -5,23 +5,21 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 const uri = process.env.MONGODB_URI || "";
-
-// Cache instance client agar tidak overload koneksi MongoDB di Vercel Serverless
 let cachedClient: MongoClient | null = null;
 
 async function connectToDatabase() {
   if (cachedClient) return cachedClient;
-  if (!uri) throw new Error("MongoDB URI tidak dikonfigurasi di Environment Variables Vercel");
+  if (!uri) throw new Error("MongoDB URI tidak dikonfigurasi");
   cachedClient = await MongoClient.connect(uri);
   return cachedClient;
 }
 
+// GET: Mengambil semua data checklist milik semua orang
 export async function GET() {
   try {
     const client = await connectToDatabase();
     const db = client.db('gede_db');
     
-    // Ambil semua data checklist terbaru langsung dari server database
     const checklistData = await db.collection('gear_checklist').find({}).toArray();
     
     const checklistState: { [key: string]: boolean } = {};
@@ -29,14 +27,11 @@ export async function GET() {
       checklistState[`${item.participantName}-${item.gearName}`] = item.isChecked;
     });
 
-    // Return dengan Header Bypass Cache super ketat
     return new NextResponse(JSON.stringify(checklistState), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-        'Pragma': 'no-cache',
-        'Expires': '0',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
       },
     });
   } catch (error: any) {
@@ -44,32 +39,36 @@ export async function GET() {
   }
 }
 
+// POST: Sinkronisasi data lokal dari HP pengguna ke cloud database
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { participantName, gearName, isChecked } = body;
+    const { updates } = body; // Menerima array dari data yang diubah lokal
 
-    if (!participantName || !gearName) {
-      return NextResponse.json({ error: "Data tidak lengkap" }, { status: 400 });
+    if (!updates || !Array.isArray(updates)) {
+      return NextResponse.json({ error: "Format data salah" }, { status: 400 });
     }
 
     const client = await connectToDatabase();
     const db = client.db('gede_db');
+    const collection = db.collection('gear_checklist');
 
-    // Operasi atomik: Mengunci baris dokumen spesifik milik satu orang + satu alat
-    // Mencegah tabrakan meskipun 3 orang klik bareng di milidetik yang sama
-    await db.collection('gear_checklist').updateOne(
-      { participantName, gearName },
-      { 
-        $set: { 
-          participantName, 
-          gearName, 
-          isChecked: Boolean(isChecked), 
-          updatedAt: new Date() 
-        } 
-      },
-      { upsert: true }
-    );
+    // Lakukan bulk write atau looping update massal dengan aman
+    for (const update of updates) {
+      const { participantName, gearName, isChecked } = update;
+      await collection.updateOne(
+        { participantName, gearName },
+        { 
+          $set: { 
+            participantName, 
+            gearName, 
+            isChecked: Boolean(isChecked), 
+            updatedAt: new Date() 
+          } 
+        },
+        { upsert: true }
+      );
+    }
 
     return NextResponse.json({ success: true });
   } catch (error: any) {
