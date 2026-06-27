@@ -1,12 +1,12 @@
 'use client';
-import { useEffect,useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
   
-  // State untuk melacak data apa saja yang baru dirubah dan belum disimpan
+  // State pelacak editan lokal
   const [localChanges, setLocalChanges] = useState<{ [key: string]: { participantName: string; gearName: string; isChecked: boolean } }>({});
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -16,16 +16,21 @@ export default function GearChecklistTable() {
     setLoading(true);
     try {
       const timestamp = new Date().getTime();
+      
+      // Ambil data personil tim
       const resExpedition = await fetch(`/api/expedition?t=${timestamp}`, { cache: 'no-store' });
       const dExpedition = await resExpedition.json();
       setData(dExpedition);
 
+      // Ambil data checklist dari MongoDB
       const resChecklist = await fetch(`/api/checklist?t=${timestamp}`, { cache: 'no-store' });
       const dChecklist = await resChecklist.json();
       
       if (dChecklist && !dChecklist.error) {
         setChecklistState(dChecklist);
-        setLocalChanges({}); // Kosongkan riwayat editan lokal saat data segar masuk
+        setLocalChanges({}); // Reset antrean lokal setelah berhasil memuat data segar
+      } else if (dChecklist.error) {
+        console.error("API Checklist me-return error:", dChecklist.error);
       }
     } catch (err) {
       console.error("Gagal menarik data cloud:", err);
@@ -38,15 +43,15 @@ export default function GearChecklistTable() {
     fetchData();
   }, [fetchData]);
 
-  // 2. Fungsi Klik Handler: Hanya merubah data di layar HP
+  // 2. Klik handler (Hanya merubah state visual layar sementara)
   const toggleCheck = (participantName: string, gearName: string) => {
     const key = `${participantName}-${gearName}`;
     const targetStatus = !checklistState[key];
 
-    // A. Ubah tampilan di layar instan
+    // Ubah di layar instan
     setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
 
-    // B. Catat perubahan ke dalam daftar antrean simpan
+    // Catat ke daftar editan yang siap dikirim
     setLocalChanges(prev => ({
       ...prev,
       [key]: { participantName, gearName, isChecked: targetStatus }
@@ -54,7 +59,7 @@ export default function GearChecklistTable() {
     setSaveSuccess(false);
   };
 
-  // 3. JANTUNG SOLUSI: Fungsi Tombol Simpan Manual ke MongoDB
+  // 3. Fungsi Kirim Data ke Database (Dengan Deteksi Error Ketat)
   const handleSaveChanges = async () => {
     const updatesArray = Object.values(localChanges);
     if (updatesArray.length === 0) return;
@@ -63,20 +68,29 @@ export default function GearChecklistTable() {
     try {
       const response = await fetch('/api/checklist', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
         body: JSON.stringify({ updates: updatesArray })
       });
 
-      if (response.ok) {
-        const resData = await response.json();
-        if (resData.success) {
-          setLocalChanges({}); // Bersihkan antrean karena sudah aman di cloud
-          setSaveSuccess(true);
-          setTimeout(() => setSaveSuccess(false), 3000); // Hilangkan notif sukses setelah 3 detik
-        }
+      const resData = await response.json();
+
+      if (response.ok && resData.success) {
+        // JIKA BENAR-BENAR SUKSES MASUK MONGODB:
+        setLocalChanges({});
+        setSaveSuccess(true);
+        // Tarik data ulang dari cloud untuk memastikan sinkronisasi sempurna
+        await fetchData(); 
+        setTimeout(() => setSaveSuccess(false), 3000);
+      } else {
+        // Jika server me-return status error (misal 500 atau 400)
+        alert(`❌ Gagal menyimpan! Server merespon: ${resData.error || 'Unknown Error'}`);
+        await fetchData(); // Kembalikan ke data asli di database karena gagal
       }
-    } catch (error) {
-      alert("❌ Gagal menyimpan ke database cloud! Periksa koneksi internetmu.");
+    } catch (error: any) {
+      alert(`💥 Koneksi Terputus! Tidak bisa menghubungi database cloud. Error: ${error.message}`);
     } finally {
       setIsSaving(false);
     }
@@ -84,10 +98,10 @@ export default function GearChecklistTable() {
 
   const hasChanges = Object.keys(localChanges).length > 0;
 
-  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Memuat Matriks Perlengkapan...</div>;
+  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Menghubungkan Server Cloud MongoDB...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // Master Data Perlengkapan
+  // Master Kategori Perlengkapan (Sama Seperti Sebelumnya)
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -176,23 +190,22 @@ export default function GearChecklistTable() {
   return (
     <div className="p-2 sm:p-4 max-w-7xl mx-auto space-y-6">
       
-      {/* HEADER PANEL + TOMBOL SIMPAN MANUAL */}
+      {/* HEADER CONTROL PANEL */}
       <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4 sticky top-0 md:relative z-50">
         <div className="space-y-1">
           <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center">
-            <i className="fa-solid fa-cloud-arrow-up text-emerald-600 mr-2"></i>Checklist Perlengkapan Personal Tim
+            <i className="fa-solid fa-cloud-arrow-up text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Tim
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Silakan centang bawaanmu secara bebas, lalu klik tombol <strong className="text-slate-800">Simpan Ke Database</strong> jika sudah selesai.
+            Centang bawaan mandiri kamu, lalu tekan <strong className="text-emerald-700">Simpan Perubahan</strong> agar sinkron ke seluruh anggota tim.
           </p>
         </div>
         
-        {/* GRUP CONTROL UTAMA (TOMBOL REFRESH & SIMPAN) */}
         <div className="flex items-center gap-2 w-full md:w-auto">
           <button 
             onClick={fetchData}
             className="bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold p-3 rounded-xl border border-slate-300 transition-colors"
-            title="Tarik ulang data terbaru teman"
+            title="Tarik data terbaru dari cloud"
           >
             <i className="fa-solid fa-rotate"></i>
           </button>
@@ -202,19 +215,19 @@ export default function GearChecklistTable() {
             disabled={!hasChanges || isSaving}
             className={`flex-grow md:flex-grow-0 inline-flex items-center justify-center text-xs font-black py-3 px-5 rounded-xl transition-all gap-2 shadow-sm ${
               hasChanges 
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white animate-pulse' 
+                ? 'bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold' 
                 : saveSuccess 
                 ? 'bg-blue-600 text-white'
                 : 'bg-slate-200 text-slate-400 cursor-not-allowed'
             }`}
           >
             <i className={`fa-solid ${isSaving ? 'fa-spinner animate-spin' : saveSuccess ? 'fa-circle-check' : 'fa-floppy-disk'}`}></i>
-            {isSaving ? 'Menyimpan...' : saveSuccess ? 'Berhasil Disimpan!' : hasChanges ? `Simpan (${Object.keys(localChanges).length} Perubahan)` : 'Sudah Tersimpan'}
+            {isSaving ? 'Sedang Menyimpan...' : saveSuccess ? 'Berhasil Disimpan!' : hasChanges ? `Simpan Perubahan (${Object.keys(localChanges).length})` : 'Sudah Sinkron'}
           </button>
         </div>
       </div>
 
-      {/* 1. TAMPILAN MOBILE HP */}
+      {/* 1. LAYOUT MOBILE HP */}
       <div className="block sm:hidden space-y-6">
         {gearCategories.map((cat, catIdx) => (
           <div key={`mobile-cat-${catIdx}`} className="space-y-3">
@@ -263,7 +276,7 @@ export default function GearChecklistTable() {
         ))}
       </div>
 
-      {/* 2. TAMPILAN DESKTOP */}
+      {/* 2. LAYOUT DESKTOP */}
       <div className="hidden sm:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
         <div className="overflow-auto max-h-[calc(100vh-220px)] min-w-full">
           <div style={{ minWidth: `${400 + (totalParticipants * 140)}px` }} className="text-left">
@@ -285,7 +298,7 @@ export default function GearChecklistTable() {
             <div className="text-sm text-slate-800 font-medium divide-y divide-slate-100">
               {gearCategories.map((cat, catIdx) => (
                 <div key={`desktop-cat-group-${catIdx}`}>
-                  <div className="w-full bg-slate-100/90 border-y border-slate-200 text-xs font-black text-slate-700 uppercase tracking-wider p-3 pl-4 sticky top-[48px] z-20">
+                  <div className="w-full bg-slate-100/90 border-y border-slate-200 text-xs font-black text-slate-700 uppercase tracking-wider p-3 pl-4 sticky top-[48px z-20]">
                     📂 {cat.category}
                   </div>
 
