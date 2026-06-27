@@ -4,19 +4,19 @@ import { useEffect, useState } from 'react';
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  // State checklist sekarang diisi dari database
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
 
+  // Fungsi fetch data dengan instruksi no-store (mengabaikan cache browser)
   const fetchData = async () => {
     setLoading(true);
     try {
       // 1. Ambil data roster tim asli
-      const resExpedition = await fetch('/api/expedition');
+      const resExpedition = await fetch('/api/expedition', { cache: 'no-store' });
       const dExpedition = await resExpedition.json();
       setData(dExpedition);
 
-      // 2. Ambil data checklist dari MongoDB Database
-      const resChecklist = await fetch('/api/checklist');
+      // 2. Ambil data checklist dari MongoDB
+      const resChecklist = await fetch('/api/checklist', { cache: 'no-store' });
       const dChecklist = await resChecklist.json();
       if (!dChecklist.error) {
         setChecklistState(dChecklist);
@@ -32,16 +32,15 @@ export default function GearChecklistTable() {
     fetchData();
   }, []);
 
-  // Fungsi toggle yang langsung menyimpan ke MongoDB
+  // Fungsi toggle yang langsung menyinkronkan status ke MongoDB
   const toggleCheck = async (participantName: string, gearName: string) => {
     const key = `${participantName}-${gearName}`;
     const targetStatus = !checklistState[key];
 
-    // Optimistic Update: Ubah di layar secara instan dulu agar terasa cepat
+    // Optimistic Update: Ubah di layar secara instan dulu agar terasa responsif
     setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
 
     try {
-      // Kirim perubahan status centang ke database backend
       await fetch('/api/checklist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -53,7 +52,7 @@ export default function GearChecklistTable() {
       });
     } catch (err) {
       console.error("Gagal menyimpan ke database:", err);
-      // Revert/kembalikan jika gagal kirim ke server
+      // Revert/kembalikan status di layar jika koneksi server gagal
       setChecklistState(prev => ({ ...prev, [key]: !targetStatus }));
     }
   };
@@ -61,7 +60,7 @@ export default function GearChecklistTable() {
   if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Memuat Matriks Perlengkapan...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // DATA KATEGORI (Tetap sama seperti kode sebelumnya)
+  // Daftar Kategori Perlengkapan Mandiri
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -157,7 +156,7 @@ export default function GearChecklistTable() {
             <i className="fa-solid fa-table-list text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Personal
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Centang nama masing-masing peserta untuk menandai kesiapan logistik mandiri mereka. data tersimpan otomatis di cloud database.
+            Centang nama masing-masing peserta untuk menandai kesiapan logistik mandiri mereka. Data tersimpan otomatis di cloud database.
           </p>
         </div>
         
@@ -171,7 +170,7 @@ export default function GearChecklistTable() {
         </button>
       </div>
 
-      {/* 1. TAMPILAN MOBILE RESPONSIF */}
+      {/* 1. VIEW UNTUK LAYAR MOBILE HP */}
       <div className="block sm:hidden space-y-6">
         {gearCategories.map((cat, catIdx) => (
           <div key={`mobile-cat-${catIdx}`} className="space-y-3">
@@ -220,7 +219,7 @@ export default function GearChecklistTable() {
         ))}
       </div>
 
-      {/* 2. TAMPILAN DESKTOP */}
+      {/* 2. VIEW UNTUK LAYAR DESKTOP / LAPTOP */}
       <div className="hidden sm:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
         <div className="overflow-auto max-h-[calc(100vh-220px)] min-w-full">
           <div style={{ minWidth: `${400 + (totalParticipants * 140)}px` }} className="text-left">
