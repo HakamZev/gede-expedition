@@ -6,11 +6,11 @@ export default function GearChecklistTable() {
   const [loading, setLoading] = useState(true);
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
   
-  // Menyimpan data antrean yang di-klik lokal dan belum dikirim ke cloud database
+  // Antrean lokal yang kebal terhadap kegagalan jaringan
   const pendingSyncRef = useRef<{ [key: string]: { participantName: string; gearName: string; isChecked: boolean } }>({});
-  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
 
-  // 1. Ambil Data Awal (Gabungkan Cloud Database + Sisa Antrean Lokal jika ada)
+  // 1. Ambil Data Gabungan (Cloud Database + Backup Lokal)
   const fetchData = useCallback(async (showFullLoading = true) => {
     if (showFullLoading) setLoading(true);
     try {
@@ -24,86 +24,102 @@ export default function GearChecklistTable() {
       const dChecklist = await resChecklist.json();
       
       if (dChecklist && !dChecklist.error) {
-        // Ambil data dari database cloud, lalu timpa dengan perubahan lokal yang belum sempat terkirim
+        // Ambil cadangan lokal untuk memastikan tidak ada data yang terlewat
         const localSaved = localStorage.getItem('gede_gear_checklist_backup');
         const localParsed = localSaved ? JSON.parse(localSaved) : {};
         
-        const mergedState = { ...dChecklist, ...localParsed };
-        setChecklistState(mergedState);
+        setChecklistState({ ...dChecklist, ...localParsed });
       }
     } catch (err) {
-      console.error("Gagal sinkronisasi data cloud:", err);
+      console.error("Gagal menarik data cloud:", err);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // 2. Fungsi Sinkronisasi Latar Belakang (Sync Background Task)
+  // 2. Fungsi Sinkronisasi Latar Belakang yang Dilindungi (Safe Sync)
   const syncPendingToCloud = useCallback(async () => {
-    const queue = Object.values(pendingSyncRef.current);
-    if (queue.length === 0 || isSyncingCloud) return;
+    // Ambil cuplikan antrean saat ini
+    const currentQueue = { ...pendingSyncRef.current };
+    const queueArray = Object.values(currentQueue);
+    
+    if (queueArray.length === 0) return;
 
-    setIsSyncingCloud(true);
     try {
       const response = await fetch('/api/checklist', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates: queue })
+        headers: { 
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
+        body: JSON.stringify({ updates: queueArray })
       });
 
-      const resData = await response.json();
-      if (resData.success) {
-        // Jika sukses dikirim ke MongoDB, kosongkan antrean pending lokal
-        pendingSyncRef.current = {};
-        localStorage.removeItem('gede_gear_checklist_backup');
+      if (response.ok) {
+        const resData = await response.json();
+        if (resData.success) {
+          // JIKA BERHASIL: Hapus HANYA data yang sukses dikirim dari antrean utama
+          Object.keys(currentQueue).forEach(key => {
+            if (pendingSyncRef.current[key] && pendingSyncRef.current[key].isChecked === currentQueue[key].isChecked) {
+              delete pendingSyncRef.current[key];
+            }
+          });
+          
+          // Perbarui indikator angka antrean di layar
+          const remainingCount = Object.keys(pendingSyncRef.current).length;
+          setPendingCount(remainingCount);
+
+          if (remainingCount === 0) {
+            localStorage.removeItem('gede_gear_checklist_backup');
+          }
+        }
       }
     } catch (error) {
-      console.error("Gagal sinkronisasi ke cloud, akan dicoba lagi nanti:", error);
-    } finally {
-      setIsSyncingCloud(false);
+      console.error("Koneksi gagal, menyimpan antrean untuk dicoba 5 detik lagi:", error);
     }
-  }, [isSyncingCloud]);
+  }, []);
 
-  // Set-up effect untuk polling data tim lain & pengiriman berkala
+  // Manajemen Polling Otomatis (Setiap 5 Detik)
   useEffect(() => {
     fetchData(true);
     
-    // Kirim data lokal & tarik data baru dari teman setiap 5 detik
-    const syncInterval = setInterval(() => {
+    const interval = setInterval(() => {
       syncPendingToCloud();
       fetchData(false);
     }, 5000);
     
-    return () => clearInterval(syncInterval);
+    return () => clearInterval(interval);
   }, [fetchData, syncPendingToCloud]);
 
-  // 3. Fungsi Klik: Instan masuk layar & simpan lokal dulu
+  // 3. Fungsi Klik Handler (0-Delay Responsif)
   const toggleCheck = (participantName: string, gearName: string) => {
     const key = `${participantName}-${gearName}`;
     const targetStatus = !checklistState[key];
 
-    // A. LANGSUNG UPDATE LAYAR (Tanpa delay milidetik pun)
+    // A. Deteksi Instan di Layar Browser
     const updatedState = { ...checklistState, [key]: targetStatus };
     setChecklistState(updatedState);
 
-    // B. SIMPAN KE BACKUP LOCAL STORAGE HP
+    // B. Tulis ke Backup LocalStorage
     const localSaved = localStorage.getItem('gede_gear_checklist_backup');
     const localParsed = localSaved ? JSON.parse(localSaved) : {};
     localParsed[key] = targetStatus;
     localStorage.setItem('gede_gear_checklist_backup', JSON.stringify(localParsed));
 
-    // C. MASUKKAN KE DAFTAR ANTREAN UNTUK SINKRONISASI KE MONGODB
+    // C. Masukkan ke Ref Antrean untuk disemburkan ke MongoDB
     pendingSyncRef.current[key] = {
       participantName,
       gearName,
       isChecked: targetStatus
     };
+    
+    setPendingCount(Object.keys(pendingSyncRef.current).length);
   };
 
-  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Menginisialisasi Local Storage & Cloud...</div>;
+  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Menghubungkan Jaringan Sinkronisasi...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // Struktur Data Kategori Alat
+  // Master Kategori Alat (Tetap Sama)
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -196,20 +212,20 @@ export default function GearChecklistTable() {
       <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="space-y-1">
           <h2 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center">
-            <i className="fa-solid fa-cloud-sun text-emerald-600 mr-2"></i>Matriks Checklist (Local-First Sync)
+            <i className="fa-solid fa-cloud-bolt text-emerald-600 mr-2"></i>Matriks Checklist (Local-First Sync V2)
           </h2>
           <p className="text-xs text-slate-500 font-medium">
             Klik tersimpan instan di HP kamu dan otomatis dicicil ke database awan secara berkala.
           </p>
         </div>
         
-        <div className="text-xs font-bold text-slate-500 flex items-center gap-2 bg-slate-50 border px-4 py-2 rounded-xl">
-          <span className={`w-2.5 h-2.5 rounded-full ${Object.keys(pendingSyncRef.current).length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-          {Object.keys(pendingSyncRef.current).length > 0 ? 'Ada perubahan belum tersinkron...' : 'Cloud Terkoneksi & Sinkron'}
+        <div className="text-xs font-bold flex items-center gap-2 bg-slate-50 border px-4 py-2 rounded-xl shrink-0">
+          <span className={`w-2.5 h-2.5 rounded-full ${pendingCount > 0 ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+          {pendingCount > 0 ? `Menyinkronkan ${pendingCount} data ke cloud...` : 'Cloud Terkoneksi & Sinkron'}
         </div>
       </div>
 
-      {/* 1. VIEW MOBILE */}
+      {/* 1. TAMPILAN MOBILE HP */}
       <div className="block sm:hidden space-y-6">
         {gearCategories.map((cat, catIdx) => (
           <div key={`mobile-cat-${catIdx}`} className="space-y-3">
@@ -246,7 +262,7 @@ export default function GearChecklistTable() {
                           type="checkbox" 
                           checked={isChecked}
                           onChange={() => {}} 
-                          className="w-3.5 h-3.5 text-emerald-600 border-slate-300 rounded accent-emerald-600"
+                          className="w-3.5 h-3.5 text-emerald-600 border-slate-300 rounded accent-emerald-600 shadow-xs"
                         />
                       </div>
                     );
@@ -258,7 +274,7 @@ export default function GearChecklistTable() {
         ))}
       </div>
 
-      {/* 2. VIEW DESKTOP */}
+      {/* 2. TAMPILAN DESKTOP */}
       <div className="hidden sm:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
         <div className="overflow-auto max-h-[calc(100vh-220px)] min-w-full">
           <div style={{ minWidth: `${400 + (totalParticipants * 140)}px` }} className="text-left">
@@ -301,7 +317,7 @@ export default function GearChecklistTable() {
                         const isChecked = !!checklistState[`${p.name}-${item.name}`];
                         return (
                           <div key={pIdx} onClick={() => toggleCheck(p.name, item.name)} className={`p-3 text-center cursor-pointer select-none h-full flex items-center justify-center border-r border-slate-100 ${isChecked ? 'bg-emerald-50/40' : ''}`}>
-                            <input type="checkbox" checked={isChecked} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110" />
+                            <input type="checkbox" checked={isChecked} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110 shadow-xs" />
                           </div>
                         );
                       })}
