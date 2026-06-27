@@ -8,7 +8,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
       </head>
       <body className="bg-slate-50 text-slate-800 antialiased">
-        <header className="bg-emerald-800 text-white sticky top-0 z-50 shadow-md">
+        {/* Mengubah z-50 menjadi z-[9999] agar mutlak berada di atas kontrol peta Leaflet */}
+        <header className="bg-emerald-800 text-white sticky top-0 z-[99999] shadow-md">
           <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
             <div className="flex items-center gap-3">
               <i className="fa-solid fa-mountain-sun text-3xl text-amber-400"></i>
