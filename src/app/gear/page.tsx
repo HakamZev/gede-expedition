@@ -1,5 +1,5 @@
 'use client';
-import { useEffect,创新, useState, useCallback } from 'react';
+import { useEffect,useState, useCallback } from 'react';
 
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
