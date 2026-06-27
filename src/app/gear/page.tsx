@@ -1,66 +1,100 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 export default function GearChecklistTable() {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [checklistState, setChecklistState] = useState<{ [key: string]: boolean }>({});
 
-  // Fungsi fetch data dengan instruksi no-store (mengabaikan cache browser)
-  const fetchData = async () => {
-    setLoading(true);
+  // Fungsi Fetch Utama dibungkus useCallback agar aman dari memory leak
+  const fetchData = useCallback(async (showFullLoading = true) => {
+    if (showFullLoading) setLoading(true);
     try {
-      // 1. Ambil data roster tim asli
-      const resExpedition = await fetch('/api/expedition', { cache: 'no-store' });
+      // Tambahkan timestamp unik (?t=...) di ujung URL untuk mengelabui cache browser HP
+      const timestamp = new Date().getTime();
+      
+      const resExpedition = await fetch(`/api/expedition?t=${timestamp}`, { cache: 'no-store' });
       const dExpedition = await resExpedition.json();
       setData(dExpedition);
 
-      // 2. Ambil data checklist dari MongoDB
-      const resChecklist = await fetch('/api/checklist', { cache: 'no-store' });
+      const resChecklist = await fetch(`/api/checklist?t=${timestamp}`, { cache: 'no-store' });
       const dChecklist = await resChecklist.json();
-      if (!dChecklist.error) {
+      
+      if (dChecklist && !dChecklist.error) {
         setChecklistState(dChecklist);
       }
     } catch (err) {
-      console.error("Gagal memuat data:", err);
+      console.error("Gagal sinkronisasi database:", err);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    fetchData();
   }, []);
 
-  // Fungsi toggle yang langsung menyinkronkan status ke MongoDB
-  const toggleCheck = async (participantName: string, gearName: string) => {
-    const key = `${participantName}-${gearName}`;
-    const targetStatus = !checklistState[key];
+  useEffect(() => {
+    fetchData(true);
+    
+    // Auto-refresh latar belakang setiap 10 detik agar data antar anggota tim sinkron otomatis tanpa perlu refresh manual
+    const interval = setInterval(() => {
+      fetchData(false);
+    }, 10000);
+    
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
-    // Optimistic Update: Ubah di layar secara instan dulu agar terasa responsif
+  // Fungsi klik yang kebal terhadap Tabrakan Simultan (Race Condition)
+  const toggleCheck = async (participantName: string, gearName: string) => {
+    if (syncing) return; // Kunci tombol saat sedang mengirim ke database
+    
+    const key = `${participantName}-${gearName}`;
+    const currentStatus = !!checklistState[key];
+    const targetStatus = !currentStatus;
+
+    // 1. Update Instan di Layar Pengguna (Optimistic Update)
     setChecklistState(prev => ({ ...prev, [key]: targetStatus }));
+    setSyncing(true);
 
     try {
-      await fetch('/api/checklist', {
+      // 2. Kirim ke MongoDB Cloud
+      const response = await fetch('/api/checklist', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        },
         body: JSON.stringify({
           participantName,
           gearName,
           isChecked: targetStatus
         })
       });
+
+      const resData = await response.json();
+      
+      // 3. Tarik data ter-update milik semua orang untuk memastikan keaslian state di cloud
+      if (resData.success) {
+        const timestamp = new Date().getTime();
+        const resChecklist = await fetch(`/api/checklist?t=${timestamp}`, { cache: 'no-store' });
+        const dChecklist = await resChecklist.json();
+        if (dChecklist && !dChecklist.error) {
+          setChecklistState(dChecklist);
+        }
+      } else {
+        // Balikkan ke posisi semula jika server menolak
+        setChecklistState(prev => ({ ...prev, [key]: currentStatus }));
+      }
     } catch (err) {
-      console.error("Gagal menyimpan ke database:", err);
-      // Revert/kembalikan status di layar jika koneksi server gagal
-      setChecklistState(prev => ({ ...prev, [key]: !targetStatus }));
+      console.error("Gagal simpan, mengembalikan state semula:", err);
+      setChecklistState(prev => ({ ...prev, [key]: currentStatus }));
+    } finally {
+      setSyncing(false);
     }
   };
 
-  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Memuat Matriks Perlengkapan...</div>;
+  if (loading && !data) return <div className="text-center p-12 text-slate-800 font-medium">Mengamankan Koneksi Database Cloud...</div>;
   if (!data) return <div className="text-center p-12 text-red-600 font-medium">Gagal memuat data ekspedisi.</div>;
 
-  // Daftar Kategori Perlengkapan Mandiri
+  // Struktur Master Data Kategori Alat Mandiri
   const gearCategories = [
     {
       category: "Clothing (Pakaian)",
@@ -156,21 +190,20 @@ export default function GearChecklistTable() {
             <i className="fa-solid fa-table-list text-emerald-600 mr-2"></i>Matriks Checklist Perlengkapan Personal
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Centang nama masing-masing peserta untuk menandai kesiapan logistik mandiri mereka. Data tersimpan otomatis di cloud database.
+            Mendukung pengisian simultan oleh banyak anggota tim secara bersamaan. Data tersinkronisasi global.
           </p>
         </div>
         
         <button 
-          onClick={fetchData}
-          disabled={loading}
+          onClick={() => fetchData(true)}
           className="inline-flex items-center justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2.5 px-4 rounded-xl border border-slate-300 transition-colors shrink-0 gap-1.5 w-full md:w-auto"
         >
-          <i className={`fa-solid fa-rotate ${loading ? 'animate-spin text-emerald-600' : ''}`}></i>
-          {loading ? 'Menyinkronkan...' : 'Refresh Data Roster Tim'}
+          <i className="fa-solid fa-rotate"></i>
+          Paksa Sinkronisasi Manual
         </button>
       </div>
 
-      {/* 1. VIEW UNTUK LAYAR MOBILE HP */}
+      {/* 1. LAYOUT RESPONSIVE MOBILE HP */}
       <div className="block sm:hidden space-y-6">
         {gearCategories.map((cat, catIdx) => (
           <div key={`mobile-cat-${catIdx}`} className="space-y-3">
@@ -191,7 +224,7 @@ export default function GearChecklistTable() {
 
                 <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
                   {data.participants.map((p: any, pIdx: number) => {
-                    const isChecked = checklistState[`${p.name}-${item.name}`];
+                    const isChecked = !!checklistState[`${p.name}-${item.name}`];
                     return (
                       <div 
                         key={pIdx}
@@ -205,7 +238,7 @@ export default function GearChecklistTable() {
                         <span className="truncate pr-1">👤 {p.name.split(' ')[0]}</span>
                         <input 
                           type="checkbox" 
-                          checked={isChecked || false}
+                          checked={isChecked}
                           onChange={() => {}} 
                           className="w-3.5 h-3.5 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 accent-emerald-600 shrink-0"
                         />
@@ -219,7 +252,7 @@ export default function GearChecklistTable() {
         ))}
       </div>
 
-      {/* 2. VIEW UNTUK LAYAR DESKTOP / LAPTOP */}
+      {/* 2. LAYOUT DESKTOP */}
       <div className="hidden sm:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden relative">
         <div className="overflow-auto max-h-[calc(100vh-220px)] min-w-full">
           <div style={{ minWidth: `${400 + (totalParticipants * 140)}px` }} className="text-left">
@@ -259,10 +292,10 @@ export default function GearChecklistTable() {
                       </div>
 
                       {data.participants.map((p: any, pIdx: number) => {
-                        const isChecked = checklistState[`${p.name}-${item.name}`];
+                        const isChecked = !!checklistState[`${p.name}-${item.name}`];
                         return (
                           <div key={pIdx} onClick={() => toggleCheck(p.name, item.name)} className={`p-3 text-center cursor-pointer transition-colors select-none h-full flex items-center justify-center border-r border-slate-100 last:border-r-0 ${isChecked ? 'bg-emerald-50/40' : ''}`}>
-                            <input type="checkbox" checked={isChecked || false} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110 shadow-2xs" />
+                            <input type="checkbox" checked={isChecked} onChange={() => {}} className="w-4 h-4 text-emerald-600 border-slate-300 rounded focus:ring-emerald-500 cursor-pointer accent-emerald-600 transform scale-110 shadow-2xs" />
                           </div>
                         );
                       })}
