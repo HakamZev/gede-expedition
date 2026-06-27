@@ -2,11 +2,10 @@ import { connectToDatabase } from "@/lib/db";
 import mongoose from "mongoose";
 import { NextResponse } from "next/server";
 
-// Pastikan Vercel selalu mengambil data terbaru secara dinamis dari database cloud
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// Daftarkan skema cetakan model checklist langsung menggunakan Mongoose pool
+// Model Skema Tunggal menggunakan jalur koneksi @/lib/db
 const ChecklistSchema = new mongoose.Schema({
   participantName: { type: String, required: true },
   gearName: { type: String, required: true },
@@ -17,16 +16,13 @@ const ChecklistSchema = new mongoose.Schema({
 const Checklist = mongoose.models.Checklist || mongoose.model('Checklist', ChecklistSchema);
 
 // ========================================================
-// METODE GET: MENARIK DATA CHECKLIST DARI MONGODB
+// METODE GET: AMBIL DATA DARI DATABASE (KEBAL CACHE)
 // ========================================================
 export async function GET() {
   try {
     await connectToDatabase();
-    
-    // Ambil data dari koleksi gear_checklists
     const checklistData = await Checklist.find({});
     
-    // Konversi array dokumen menjadi objek key-value map
     const checklistState: { [key: string]: boolean } = {};
     checklistData.forEach((item: any) => {
       checklistState[`${item.participantName}-${item.gearName}`] = item.isChecked;
@@ -45,7 +41,7 @@ export async function GET() {
 }
 
 // ========================================================
-// METODE POST: MENYIMPAN DATA CHECKLIST SECARA MASSAL (BULKWRITE)
+// METODE POST: SIMPAN DATA DENGAN BULKWRITE (ANTI TABRAKAN)
 // ========================================================
 export async function POST(request: Request) {
   try {
@@ -54,10 +50,9 @@ export async function POST(request: Request) {
     const { updates } = body;
 
     if (!updates || !Array.isArray(updates) || updates.length === 0) {
-      return NextResponse.json({ success: true, message: "Tidak ada data perubahan" });
+      return NextResponse.json({ success: true, message: "Tidak ada data" });
     }
 
-    // Susun operasi pembaruan massal Mongoose yang sangat aman dari tabrakan data
     const bulkOperations = updates.map((update: any) => ({
       updateOne: {
         filter: { participantName: update.participantName, gearName: update.gearName },
@@ -69,13 +64,11 @@ export async function POST(request: Request) {
             updatedAt: new Date()
           } 
         },
-        upsert: true // Jika data belum ada di database, otomatis buat baru
+        upsert: true
       }
     }));
 
-    // Eksekusi operasi massal satu ketukan ke MongoDB cluster
     await Checklist.bulkWrite(bulkOperations);
-
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
