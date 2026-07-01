@@ -106,6 +106,7 @@ export default function GearChecklistTable() {
         { name: "Jaket Hangat & Tebal", type: "Wajib" },
         { name: "Sarung Tangan", type: "Opsional" },
         { name: "Topi / Kupluk", type: "Opsional" },
+        { name: "Kaos Kaki Banyak", type: "Opsional" },
         { name: "Masker / Buff", type: "Opsional" }
       ]
     },
@@ -153,7 +154,10 @@ export default function GearChecklistTable() {
     {
       category: "Cooking and Eating (Alat Makan)",
       items: [
-        { name: "Alat Makan (Piring, Sendok, Garpu)", type: "Wajib" }
+        { name: "Alat Makan (Piring, Sendok, Garpu)", type: "Wajib" },
+        { name: "Pisau", type: "Wajib" },
+        { name: "Korek", type: "Wajib" },
+        { name: "Gelas", type: "Wajib" }
       ]
     },
     {
@@ -170,6 +174,7 @@ export default function GearChecklistTable() {
       category: "Miscellaneous (Lain-lain)",
       items: [
         { name: "Power Bank Charger", type: "Opsional" },
+        { name: "Tracking Pole", type: "Opsional" },
         { name: "Kantong Plastik Sampah (Trash Bag)", type: "Wajib" },
         { name: "Buku Catatan & Pena", type: "Opsional" },
         { name: "Pluit Darurat", type: "Wajib" }
